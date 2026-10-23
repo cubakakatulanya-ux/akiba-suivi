@@ -3,7 +3,7 @@
 Application de suivi des AVEC pour les **animateurs de terrain**, les **organisations** et
 l'**administration d'Ubora**. Elle s'installe sur le téléphone ou l'ordinateur et fonctionne sans réseau.
 
-👉 **https://avec.uborardc.com**
+👉 **https://akibas.uborardc.com**
 
 Les groupes, eux, travaillent sur **Akiba** : https://akiba.uborardc.com
 
@@ -23,8 +23,8 @@ l'écraserait, et les règles de calcul de l'AVEC doivent rester à un seul endr
 ## Mise en ligne
 
 GitHub Pages sert la branche `main` depuis la racine. Le fichier `CNAME` fixe le domaine
-`avec.uborardc.com`, qui demande chez le fournisseur du domaine un enregistrement **CNAME** :
-`avec` → `cubakakatulanya-ux.github.io`.
+`akibas.uborardc.com`, qui demande chez le fournisseur du domaine un enregistrement **CNAME** :
+`akibas` → `cubakakatulanya-ux.github.io`.
 
 ---
 
