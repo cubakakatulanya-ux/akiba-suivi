@@ -478,6 +478,7 @@ SCREENS['a.more'] = () => {
       ${li('a.cycles', 'calendar', 'Historique des cycles', `${avec.cycles.length} cycle${avec.cycles.length > 1 ? 's' : ''} terminé${avec.cycles.length > 1 ? 's' : ''}`)}
       ${li('a.roles', 'users', 'Bureau et porte-clés', 'Changer un responsable')}
       ${li('', 'map', 'Lieu du groupe', placeShort(avec) || 'À compléter', 'placeSheet')}
+      ${isBureau(me) ? li('', 'eye', 'Signe du groupe', EMBLEMES[emblemeDe(avec).signe].nom + ' · ' + TEINTES[emblemeDe(avec).teinte].nom, 'emblemeSheet') : ''}
       ${li('a.security', 'shield', 'Sécurité et carte de secours', `${(avec.rescue || []).filter(r => !r.used).length} codes de secours valables`)}
       ${li('a.member', 'user', 'Mon carnet et mon code', esc(me.name)).replace('data-to="a.member"', `data-to="a.member" data-id="${me.id}"`)}
       ${li('', 'sync', 'Changer de téléphone', 'Mettre l\'AVEC sur un nouveau téléphone', 'transferSheet').replace('data-act="transferSheet"', `data-act="transferSheet" data-id="${avec.id}"`)}
@@ -485,6 +486,7 @@ SCREENS['a.more'] = () => {
       ${li('guide', 'book', 'Guide d\'utilisation', 'Tout sur l\'AVEC et l\'application')}
       ${li('', 'globe', 'Langue', I18N.name(), 'langSheet')}
       ${li('', 'eye', 'Apparence', THEMES[themeChoisi()], 'themeSheet')}
+      ${li('', sonActif() ? 'bell' : 'bellOff', 'Sons', sonActif() ? 'Une note à chaque écriture' : 'Coupés', 'sonSheet')}
       ${li('', 'cloud', 'Synchronisation', `${pending(avec)} écriture(s) à envoyer`, 'syncSheet')}
     </div>
     <section class="section"><h2>Règlement intérieur · cycle ${avec.cycle.n}</h2><div class="list">

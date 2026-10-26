@@ -58,7 +58,8 @@ const grp = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 const fc = n => (n < 0 ? '−' : '') + grp(Math.abs(n)) + ' FC';
 const fck = n => Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1).replace('.', ',') + ' M FC' : fc(n);
 const pct = x => Math.round(x * 100) + ' %';
-const fdate = ts => new Date(ts).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+/* la date suit la langue choisie quand Akiba sait la dire (voir CALENDRIER dans i18n.js) */
+const fdate = ts => (typeof fdateL === 'function' ? fdateL(ts) : new Date(ts).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' }));
 /* Une échéance ne doit jamais tomber un jour où le groupe ne se réunit pas : personne ne peut
    rembourser ce jour-là, et le crédit passerait « en retard » un jour sans réunion. On reporte
    donc l'échéance au premier jour de réunion qui suit — jamais avant, pour ne pénaliser personne.
@@ -370,8 +371,20 @@ const DB = {
     migrate(K.data);
     try { K.session = JSON.parse(localStorage.getItem(STORE + '.s') || 'null'); } catch (e) { K.session = null; }
   },
+  /* Rend true quand le téléphone a bien gardé l'écriture. Un échec — mémoire pleine, navigation
+     privée — laissait jusqu'ici l'application tourner en mémoire sans rien dire, et tout se perdait
+     à la fermeture. On le dit une fois, et l'appelant qui peut revenir en arrière le fait. */
   save() {
-    try { localStorage.setItem(STORE, JSON.stringify(K.data)); localStorage.setItem(STORE + '.s', JSON.stringify(K.session)); } catch (e) { /* stockage indisponible : l'app continue en mémoire */ }
+    try {
+      localStorage.setItem(STORE, JSON.stringify(K.data));
+      localStorage.setItem(STORE + '.s', JSON.stringify(K.session));
+      DB.enPanne = false;
+      return true;
+    } catch (e) {
+      if (!DB.enPanne && typeof App !== 'undefined' && App.toast) App.toast('Le téléphone n’arrive plus à garder les écritures : mémoire pleine. Exportez vos données.');
+      DB.enPanne = true;
+      return false;
+    }
   },
   /* la graine passe par migrate() comme toute donnée chargée : mêmes valeurs par défaut, mêmes règles */
   reset() { K.data = seed(); migrate(K.data); K.session = null; DB.save(); }
@@ -622,6 +635,8 @@ const App = {
   toast(msg) {
     const el = document.createElement('div');
     el.className = 'toast'; el.setAttribute('role', 'status'); el.textContent = typeof I18N !== 'undefined' ? I18N.t(msg) : msg;
+    /* le son dit ce que le message dit, pour qui ne regarde pas l'écran ou ne sait pas lire */
+    if (typeof jouerSon === 'function') { const s = sonDuMessage(msg); jouerSon(s); vibrer(s === 'erreur' ? [30, 50, 30] : 18); }
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 2800);
   }
@@ -699,7 +714,7 @@ document.addEventListener('input', e => {
 });
 
 /* ---------- pièces communes ---------- */
-const avatar = m => `<span class="av ${m.sex === 'F' ? 'f' : ''}">${esc(initials(m.name))}</span>`;
+const avatar = m => `<span class="av ${m.sex === 'F' ? 'f' : ''}">${typeof photoDe === 'function' && photoDe(m) ? `<img src="${photoDe(m)}" alt="">` : esc(initials(m.name))}</span>`;
 const stampsHtml = (n, max = 5) => `<span class="stamps" aria-label="${n} parts">${Array.from({ length: max }, (_, i) => `<span class="${i < n ? 'on' : ''}"></span>`).join('')}</span>`;
 const topbar = (title, sub, left = '', right = '') => {
   // flèche retour et bouton de déconnexion sur tous les écrans à barre verte
