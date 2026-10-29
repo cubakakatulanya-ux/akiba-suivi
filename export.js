@@ -69,6 +69,11 @@ function buildXlsx(sheets) {
 /* ---------- données exportées ---------- */
 const STATUS_TXT = { active: 'Active', pending: 'À valider', refused: 'Refusée' };
 function exportScope(p) {
+  /* le bureau d'une AVEC autonome n'exporte que son propre cahier */
+  if (!(K.session && K.session.userId)) {
+    const a = K.session && K.session.avecId ? avecById(K.session.avecId) : null;
+    return { u: null, avecs: a ? [a] : [] };
+  }
   const u = me_user();
   let avecs = myAvecs(u);
   if (p && p.anim) avecs = avecs.filter(a => a.animId === p.anim);
@@ -76,32 +81,43 @@ function exportScope(p) {
 }
 function exportSheets(avecs) {
   const animName = a => a.animId ? ((userById(a.animId) || {}).name || '—') : 'AVEC autonome';
-  const rows = avecs.map(a => ({ a, st: stats(a, { syncedOnly: true }) }));
+  /* appelé par l'organisation, par l'animateur, ou par le bureau d'une AVEC autonome */
+  /* On additionne le journal, pas la part des écritures marquées « transmises ». Le filtre
+     précédent donnait des rapports à zéro franc là où le cahier portait des millions, avec
+     la mention « données envoyées par les AVEC » et aucun avertissement : un bailleur ne
+     pouvait pas voir que le fichier était vide faute de transmission. */
+  const rows = avecs.map(a => ({ a, st: stats(a), enAttente: pending(a) }));
   // la synthèse suit le tableau de bord : seulement les AVEC actives
   const act = rows.filter(r => isActive(r.a));
   const T = f => act.reduce((s, r) => s + f(r), 0);
   const members = T(r => r.st.activeCount), women = T(r => r.st.women), outstanding = T(r => r.st.outstanding), late = T(r => r.st.lateAmt);
-  const org = orgOf(me_user().orgId);
+  /* L'export servait aussi à une AVEC autonome à qui un partenaire demande un rapport : il
+     n'y a alors ni organisation ni animateur, et me_user() n'existe pas. */
+  const moi = K.session && K.session.userId ? me_user() : null;
+  const groupe = !moi && K.session && K.session.avecId ? avecById(K.session.avecId) : null;
+  const parQui = moi ? moi.name : groupe ? ((memberOf(groupe, K.session.memberId) || {}).name || 'le bureau') + ' · ' + groupe.name : '—';
+  const org = moi ? orgOf(moi.orgId) : null;
   const synth = {
     name: 'Synthèse', cols: [{ h: 'Indicateur', w: 34 }, { h: 'Valeur', w: 22 }],
     rows: [
-      ['Organisation', org ? org.name : '—'], ['Exporté par', me_user().name], ['Date de l\'export', Date.now()],
+      ['Organisation', org ? org.name : 'AVEC autonome'], ['Exporté par', parQui], ['Date de l\'export', Date.now()],
       ['AVEC actives', act.length], ['AVEC à valider ou refusées', rows.length - act.length], ['Membres actifs', members], ['Dont femmes', members ? women / members : 0],
       ['Épargne du cycle en cours (FC)', T(r => r.st.sum.EPARGNE)], ['Crédits en cours (FC)', outstanding], ['Crédits en retard (FC)', late],
       ['Portefeuille à risque (PAR)', outstanding ? late / outstanding : 0], ['Caisses sociales (FC)', T(r => r.st.socialFund)], ['Argent en caisse (FC)', T(r => r.st.cash)],
       ['Modules de formation réalisés', act.length ? T(r => trainingCount(r.a)) / (act.length * 7) : 0],
-      ['Source', 'Réunions reçues par l\'organisation (données envoyées par les AVEC)']
+      ['Écritures pas encore transmises', T(r => r.enAttente)],
+      ['Source', 'Cahiers des AVEC tels qu\'ils sont sur ce téléphone, transmis ou non']
     ]
   };
   // types de la colonne Valeur, ligne par ligne
-  const synthTypes = ['s', 's', 'd', 'n', 'n', 'n', 'p', 'n', 'n', 'n', 'p', 'n', 'n', 'p', 's'];
+  const synthTypes = ['s', 's', 'd', 'n', 'n', 'n', 'p', 'n', 'n', 'n', 'p', 'n', 'n', 'p', 'n', 's'];
   synth.rows = synth.rows.map((r, i) => [r[0], { v: r[1], t: synthTypes[i] }]);
 
   const avecSheet = {
     name: 'AVEC', cols: [
       { h: 'AVEC', w: 26 }, { h: 'Statut', w: 11 }, { h: 'Animateur', w: 22 }, { h: 'Province', w: 14 }, { h: 'Territoire / ville', w: 18 }, { h: 'Village / quartier', w: 18 }, { h: 'Latitude', w: 12, t: 'n' }, { h: 'Longitude', w: 12, t: 'n' }, { h: 'Précision GPS (m)', w: 11, t: 'n' },
       { h: 'Jour de réunion', w: 14 }, { h: 'Cycle n°', w: 9, t: 'n' }, { h: 'Début du cycle', w: 13, t: 'd' }, { h: 'Fin prévue', w: 13, t: 'd' },
-      { h: 'Membres actifs', w: 10, t: 'n' }, { h: 'Femmes', w: 9, t: 'n' }, { h: 'Réunions reçues', w: 10, t: 'n' }, { h: 'Dernière réunion', w: 13, t: 'd' }, { h: 'Présence', w: 10, t: 'p' },
+      { h: 'Membres actifs', w: 10, t: 'n' }, { h: 'Femmes', w: 9, t: 'n' }, { h: 'Réunions tenues', w: 10, t: 'n' }, { h: 'Dernière réunion', w: 13, t: 'd' }, { h: 'Présence', w: 10, t: 'p' },
       { h: 'Valeur de la part achetée (FC)', w: 14, t: 'n' }, { h: 'Parts', w: 9, t: 'n' }, { h: 'Épargne (FC)', w: 13, t: 'n' }, { h: 'Valeur actuelle d\'une part (FC)', w: 14, t: 'n' },
       { h: 'Crédits en cours (nombre)', w: 10, t: 'n' }, { h: 'Crédits en cours (FC)', w: 13, t: 'n' }, { h: 'En retard (FC)', w: 12, t: 'n' }, { h: 'PAR', w: 8, t: 'p' },
       { h: 'Intérêts reçus (FC)', w: 12, t: 'n' }, { h: 'Amendes payées (FC)', w: 12, t: 'n' }, { h: 'Caisse sociale (FC)', w: 12, t: 'n' }, { h: 'Aides versées (FC)', w: 12, t: 'n' },

@@ -72,7 +72,7 @@ function homeBand(avec, st, open, next) {
   const late = st.activeLoans.filter(l => l.status === 'retard');
   const days = Math.ceil((cycleEnd(avec) - Date.now()) / DAY);
   const nm = typeof nextModule === 'function' ? nextModule(avec) : null;
-  const toSend = pending(avec);
+  const toSend = pending(avec);                                      // écritures qui n'existent que sur ce téléphone
   return ticker([
     { icon: 'calendar', label: open ? `Réunion n°${open.n} en cours` : `Prochaine réunion : n°${next}` },
     { icon: 'users', label: 'Membres', value: `${st.activeCount}${st.activeCount ? ' · ' + pct(st.women / st.activeCount) + ' de femmes' : ''}` },
@@ -95,6 +95,10 @@ SCREENS['a.home'] = () => {
   const h = health(avec, st, chainOf(avec));
   const ch = chainOf(avec);
   return `<div class="shell">${aTop(avec)}<main class="main">
+    <!-- D'où vient ce cahier : un cahier reçu d'un autre téléphone est cohérent avec lui-même,
+         donc impossible à distinguer d'un cahier complet. C'est le seul endroit où l'application
+         peut dire qu'il ne l'est peut-être pas, et elle le dit avant tout le reste. -->
+    ${envoiBloc(avec)}
     <div class="greet">${avatar(me)}<span class="grow"><b>Bonjour ${esc(me.name.split(' ')[0])}</b><span class="small muted">${roleLabel(me)} · ${fdate(Date.now())}</span></span>${open ? '<span class="chip warn">Réunion ouverte</span>' : ''}</div>
     <section class="caisse" aria-label="Caisse">
       <div class="locks" aria-hidden="true">${[1, 2, 3].map(() => `<span style="width:18px;height:18px;display:block">${ic('lock')}</span>`).join('')}</div>
@@ -263,7 +267,10 @@ const STEP = {
   },
   social(avec, m, st) {
     const aides = meetTx(avec, m, ['AIDE']);
-    const aideBtn = `<button class="btn ghost block" data-act="aideSheet">${ic('hand')} Donner une aide sociale</button>`;
+    /* La caisse sociale sert à deux choses : aider un membre, et payer ce que le groupe achète.
+       Les deux boutons sont côte à côte, parce que les deux sortent du même argent. */
+    const aideBtn = `<button class="btn ghost block" data-act="aideSheet">${ic('hand')} Donner une aide sociale</button>
+      <button class="btn ghost block" data-act="depenseSheet">${ic('clip')} Dépense du groupe (cahier, stylos…)</button>`;
     if (m.stepDone >= 2) return `${doneBanner('Cotisations sociales enregistrées.')}<div class="list">${txRows(avec, meetTx(avec, m, ['SOCIAL', 'AIDE']), 'Aucune cotisation')}</div>${aideBtn}${nextBtn(2, 'Suivant')}`;
     const here = presentMembers(avec, m);
     const dr = draft(m.id + ':social', () => { const o = {}; here.forEach(x => o[x.id] = true); return { paid: o }; });
@@ -309,6 +316,14 @@ const STEP = {
     const list = meetTx(avec, m, ['CREDIT']);
     return `<div><h2>Nouveaux crédits</h2><p class="muted">Un membre peut emprunter jusqu'à ${avec.settings.maxMult} fois son épargne, pour ${avec.settings.maxMonths} mois au plus, à ${avec.settings.rate} % par mois. L'assemblée écoute chaque demande.</p></div>
       <div class="card row between"><span class="label">Disponible pour prêter</span><b class="num" style="font-family:var(--f-display);font-size:1.4rem">${fc(st.loanFund)}</b></div>
+      <!-- Le capital à part des intérêts : « encours » est la créance entière, le capital est
+           l'argent du groupe encore dehors. Un auditeur et une IMF demandent les deux. -->
+      ${st.capitalDue ? `<div class="receipt stack" style="gap:4px">
+        <div class="row between small"><span class="muted">Capital prêté depuis le début du cycle</span><span class="num">${fc(st.capitalOut)}</span></div>
+        <div class="row between small"><span class="muted">Capital déjà rendu</span><span class="num">${fc(st.capitalBack)}</span></div>
+        <div class="row between"><span class="label">Capital encore dehors</span><b class="num">${fc(st.capitalDue)}</b></div>
+        <div class="row between small"><span class="muted">Dont intérêts à venir</span><span class="num">${fc(st.outstanding - st.capitalDue)}</span></div>
+      </div>` : ''}
       <div class="list">${txRows(avec, list, 'Aucun crédit accordé à cette réunion')}</div>
       ${waitBlock(avec, m, st)}
       <button class="btn brand block xl" data-act="creditSheet">${ic('plus')} Accorder un crédit</button>
@@ -437,6 +452,42 @@ ACT.excuseEffacer = d => {
   secLog(avec, 'Motif retiré', x.id, 'réunion n°' + m.n + ' · par ' + me.name);
   DB.save(); App.closeSheet(); render(); App.toast('Motif retiré');
 };
+/* Confirmer qu'un cahier reçu est bien le plus récent. C'est une décision d'assemblée, pas
+   un réglage : elle est validée par un deuxième membre du bureau et reste dans le registre
+   de sécurité, parce qu'elle engage tout le partage qui suivra. */
+ACT.recuSheet = () => {
+  const { avec } = cur();
+  const r = avec.recuDe;
+  if (!r) return;
+  const st = stats(avec);
+  App.openSheet(`<h2>D'où vient ce cahier ?</h2>
+    <p class="muted">Ce cahier a été reçu d'un autre téléphone. Il est cohérent, mais il ne contient que ce que l'autre téléphone avait <b>au moment de la copie</b> : des réunions tenues après, là-bas, n'y sont pas.</p>
+    <div class="receipt stack" style="gap:4px">
+      <div class="row between small"><span class="muted">Copié le</span><b>${fdt(r.quand)}</b></div>
+      <div class="row between small"><span class="muted">Par</span><b>${esc(r.par || '—')}</b></div>
+      <div class="row between small"><span class="muted">Dernière réunion dans la copie</span><b>n°${r.reunions}</b></div>
+      <div class="row between small"><span class="muted">Écritures dans la copie</span><b class="num">${r.ecritures}</b></div>
+      <div class="row between small"><span class="muted">Caisse à ce moment-là</span><b class="num">${fc(r.caisse)}</b></div>
+      <div class="row between"><span class="label">Aujourd'hui, sur ce téléphone</span><b class="num">${fc(st.cash)}</b></div>
+    </div>
+    <div class="alert warn">${icSpan('alert')}<div><b>À vérifier avant de partager</b>
+      <span class="small">Demandez au porteur du téléphone précédent à quelle réunion il s'était arrêté. Si c'est bien la n°${r.reunions}, confirmez ci-dessous. Sinon, récupérez d'abord son cahier : Akiba ne peut pas inventer les réunions manquantes.</span></div></div>
+    ${approverFields(avec, cur().me, 'rc')}
+    <button class="btn primary block xl" data-act="recuConfirmer">${ic('check')} C'est bien le cahier le plus récent</button>
+    <button class="btn ghost block" data-act="closeSheet">Pas encore vérifié</button>`);
+};
+ACT.recuConfirmer = () => {
+  const { avec, me } = cur();
+  if (!avec.recuDe) return;
+  if (!isBureau(me)) return App.toast('Seul le bureau peut confirmer');
+  const ap = checkApprover(avec, 'rc', null); if (!ap) return;
+  avec.recuDe.confirme = Date.now();
+  avec.recuDe.confirmePar = me.name + ' et ' + ap.name;
+  secLog(avec, 'Cahier reçu confirmé comme le plus récent', null,
+    `réunion n°${avec.recuDe.reunions} · ${me.name}, validé par ${ap.name}`);
+  DB.save(); App.closeSheet(); render();
+  App.toast('Confirmé. Le partage est de nouveau possible.');
+};
 ACT.dToggle = d => { App.draft[d.k][d.id] = !App.draft[d.k][d.id]; render(); };
 ACT.parts = d => { const { avec } = cur(); const p = App.draft.parts; p[d.id] = Math.max(0, Math.min(avec.settings.maxParts, (p[d.id] || 0) + +d.d)); render(); };
 ACT.partsZero = () => { App.draft.parts = {}; App.draft.prefilled = false; render(); };
@@ -558,7 +609,8 @@ ACT.saveClose = () => {
   DB.save();
   /* la réunion est scellée : trois notes qui montent, que toute l’assemblée entend */
   if (typeof jouerSon === 'function') { jouerSon('scelle'); vibrer([25, 60, 25, 60, 40]); }
-  if (K.data.net.online) syncAvec(avec);
+  /* On ne marque plus rien comme « envoyé » ici : fermer une réunion ne met pas le cahier à
+     l'abri. Si rien n'est sorti du téléphone depuis longtemps, l'alerte de l'accueil le dit. */
   App.go('a.receipt', { id: m.id });
 };
 
@@ -581,6 +633,29 @@ ACT.aideSheet = () => {
     <div class="field"><label for="aiN">Raison</label><input id="aiN" class="input" placeholder="Maladie, deuil, incendie…"></div>
     ${approverFields(avec, me, 'ai')}
     <button class="btn primary block xl" data-act="saveAide">Donner l'aide</button>`);
+};
+/* Une dépense du groupe : le cahier, les stylos, l'encre, le transport du secrétaire. Elle
+   sort de la caisse sociale, comme le veut la pratique AVEC, et elle est validée par un
+   deuxième membre du bureau — c'est de l'argent commun qui s'en va. */
+ACT.depenseSheet = () => {
+  const { avec, me, st } = cur();
+  App.openSheet(`<h2>Dépense du groupe</h2>
+    <p class="muted">Pour ce que le groupe achète : un cahier, des stylos, de l'encre, le transport du secrétaire. L'argent sort de la caisse sociale : <b class="num">${fc(st.socialFund)}</b> disponibles.</p>
+    <div class="field"><label for="deA">Montant</label><input id="deA" class="input bignum num" inputmode="numeric" placeholder="0"></div>
+    <div class="field"><label for="deN">Pour quoi ?</label><input id="deN" class="input" placeholder="Cahier et stylos, encre, transport…"></div>
+    ${approverFields(avec, me, 'de')}
+    <button class="btn primary block xl" data-act="saveDepense">Enregistrer la dépense</button>`);
+};
+ACT.saveDepense = () => {
+  const { avec, me, st } = cur(); const m = openMeeting(avec);
+  if (!m) return App.toast('La dépense s\'enregistre pendant une réunion');
+  const amount = parseAmt(document.getElementById('deA').value), note = document.getElementById('deN').value.trim();
+  if (!amount) return App.toast('Écrivez le montant');
+  if (!note) return App.toast('Écrivez pour quoi le groupe a dépensé');
+  if (amount > st.socialFund) return App.toast(`La caisse sociale n'a que ${fc(st.socialFund)}`);
+  const ap = checkApprover(avec, 'de', null); if (!ap) return;
+  appendTx(avec, { meetingId: m.id, type: 'DEPENSE', memberId: null, amount, note: `${note} · validé par ${ap.name}`, by: me.id });
+  DB.save(); App.closeSheet(); App.toast('Dépense enregistrée');
 };
 ACT.saveAide = () => {
   const { avec, me, st } = cur(); const m = openMeeting(avec);

@@ -95,6 +95,11 @@ const TX = {
   AMENDE: { l: 'Amende', in: true },
   CREDIT: { l: 'Crédit accordé', in: false },
   AIDE: { l: 'Aide sociale', in: false },
+  /* Les frais du groupe : cahier, stylos, encre de l'imprimante, transport du secrétaire.
+     Sans ce type, il fallait les coder en « aide sociale », ce qui débitait la caisse de
+     solidarité au nom d'un membre qui n'avait rien reçu. La dépense sort de la caisse
+     sociale, comme dans la pratique AVEC, mais elle s'appelle par son nom. */
+  DEPENSE: { l: 'Dépense du groupe', in: false },
   PARTAGE: { l: 'Partage fin de cycle', in: false },
   DEPART: { l: 'Remboursement de départ', in: false },
   DETTE: { l: 'Amende due (pas encore payée)', in: null },
@@ -106,6 +111,9 @@ const TX = {
   EXT_GUAR: { l: 'Garantie retenue par le prêteur', in: false },
   GEO: { l: 'Point GPS du groupe', in: null },
   EXCUSE: { l: 'Absence ou retard justifié', in: null },
+  /* Les arrivées et les départs de membres : aucun argent, mais la liste de ceux qui ont
+     droit à une part devient aussi infalsifiable que les sommes. */
+  MEMBRE: { l: 'Membre inscrit ou sorti', in: null },
   ANNUL: { l: 'Annulation', in: null }
 };
 
@@ -188,6 +196,23 @@ function appendTx(avec, f) {
   return t;
 }
 
+/* La liste des membres doit correspondre au journal. Elle n'était protégée par rien : un nom
+   ajouté directement dans les données restait invisible — journal valide, aucune trace — et
+   il entrait dans le décompte annoncé aux partenaires, pouvait porter une clé, et figurer
+   parmi ceux qui scellent une réunion. Chaque arrivée et chaque départ laisse maintenant une
+   écriture, et cette fonction compare les deux. */
+function verifyMembres(avec) {
+  const connus = new Set();
+  (avec.tx || []).forEach(t => { if (t.type === 'MEMBRE' && t.memberId) connus.add(t.memberId); });
+  if (!connus.size) return { ok: true, sansJournal: true };          // AVEC d'avant cette version
+  const intrus = (avec.members || []).filter(m => !connus.has(m.id));
+  return intrus.length
+    ? { ok: false, intrus: intrus.map(m => m.name), reason: intrus.length === 1
+        ? `« ${intrus[0].name} » ne figure pas dans le journal du groupe`
+        : `${intrus.length} membres ne figurent pas dans le journal du groupe` }
+    : { ok: true };
+}
+
 function verifyChain(avec) {
   let prev = 'GENESE:' + avec.id;
   for (let i = 0; i < avec.tx.length; i++) {
@@ -216,7 +241,11 @@ function stats(avec, opt = {}) {
   const act = txs.filter(t => t.type !== 'ANNUL' && !annulled.has(t.id));
   const mem = {};
   avec.members.forEach(x => mem[x.id] = { parts: 0, savings: 0, social: 0, fines: 0, fineDebt: 0, loans: [], left: !!x.left });
-  const sum = { EPARGNE: 0, SOCIAL: 0, REMB: 0, AMENDE: 0, CREDIT: 0, AIDE: 0, PARTAGE: 0, DEPART: 0, DETTE: 0, EXT_IN: 0, EXT_FEE: 0, EXT_REPAY: 0, EXT_GUAR: 0 };
+  /* Les totaux par type, initialisés depuis la table des types elle-même. En les écrivant à la
+     main, un type nouveau donnait undefined + montant, soit NaN — et le NaN se propageait
+     jusqu'à la caisse affichée. Le piège ne peut plus se reproduire. */
+  const sum = {};
+  Object.keys(TX).forEach(k => sum[k] = 0);
   const rep = { REPORT_IN: { social: 0, credit: 0 }, REPORT_OUT: { social: 0, credit: 0 } };
   const loans = {}, exts = {};
   let parts = 0;
@@ -251,8 +280,15 @@ function stats(avec, opt = {}) {
   const outstanding = activeLoans.reduce((a, l) => a + l.remaining, 0);
   const lateAmt = activeLoans.filter(l => l.status === 'retard').reduce((a, l) => a + l.remaining, 0);
   const penaltyTot = activeLoans.reduce((a, l) => a + (l.penalty || 0), 0);
+  /* Capital et intérêts se suivent séparément. Un remboursement rend d'abord le capital,
+     l'intérêt ensuite : « encours » est donc la créance entière, tandis que « capital encore
+     dehors » est l'argent du groupe qui n'est pas rentré. Les deux chiffres ne disent pas la
+     même chose, et un auditeur comme une IMF ont besoin des deux. */
   const interest = loanList.reduce((a, l) => a + Math.max(0, l.paid - l.principal), 0);
-  const socialFund = sum.SOCIAL + rep.REPORT_IN.social - sum.AIDE - rep.REPORT_OUT.social;
+  const capitalOut = loanList.reduce((x, l) => x + l.principal, 0);
+  const capitalBack = loanList.reduce((x, l) => x + Math.min(l.paid, l.principal), 0);
+  const capitalDue = capitalOut - capitalBack;
+  const socialFund = sum.SOCIAL + rep.REPORT_IN.social - sum.AIDE - sum.DEPENSE - rep.REPORT_OUT.social;
   const extList = Object.values(exts).map(e => {
     // la garantie déjà retenue par le prêteur éteint la fin de la dette : il ne reste à payer que le solde
     e.netIn = e.principal - e.guar;                                  // argent réellement entré dans la caisse
@@ -273,7 +309,7 @@ function stats(avec, opt = {}) {
   const ecarts = meetings.filter(m => m.closeCount !== m.closeExpected);
   return {
     sum, rep, mem, parts: activeParts, fineDebt, cycleN: cyc, loanList, activeLoans, outstanding, lateAmt, penaltyTot, interest, socialFund, loanFund,
-    extList, extDebt, extActive: extList.filter(e => e.status !== 'solde'),
+    extList, extDebt, extActive: extList.filter(e => e.status !== 'solde'), capitalOut, capitalBack, capitalDue,
     cash: socialFund + loanFund, par: outstanding ? lateAmt / outstanding : 0,
     meetings, last: meetings[meetings.length - 1], attendance: slots ? pres / slots : 0, ecarts,
     women: active.filter(m => m.sex === 'F').length, activeCount: active.length,
@@ -317,7 +353,18 @@ function health(avec, st, chain) {
     if (st.loanFund + st.outstanding < e.remaining) push('bad', 'Le fonds de crédit ne couvre plus la dette extérieure', `${e.lender} · reste ${fc(e.remaining)}`);
   });
   const pending = avec.tx.filter(t => !t.synced).length;
-  if (avec.orgId && pending && daysAgo(avec.lastSync || 0) > 3) push('warn', 'Données non synchronisées', `Dernière synchronisation ${ago(avec.lastSync || 0)}`);
+  /* Le risque n'est pas « pas synchronisé » — il n'y a rien à synchroniser — mais « rien
+     n'est sorti du téléphone » : si le téléphone disparaît, ces écritures disparaissent. */
+  /* Une caisse negative ne correspond a rien de reel : elle signale une reprise de cahier mal
+     saisie, ou une ecriture venue d ailleurs. Mieux vaut le dire que de l afficher comme un
+     solde. */
+  if (st.socialFund < 0) push('bad', 'Caisse sociale négative', fc(st.socialFund) + ' : il est sorti plus que ce qui est entré');
+  if (st.loanFund < 0) push('bad', 'Caisse de crédit négative', fc(st.loanFund) + ' : il est sorti plus que ce qui est entré');
+  const vm = verifyMembres(avec);
+  if (!vm.ok) push('bad', 'Liste des membres altérée', vm.reason);
+  if (pending && daysAgo(avec.lastSync || 0) > 7)
+    push('warn', 'Aucune sauvegarde récente', avec.lastSync ? `Dernière sortie du téléphone ${ago(avec.lastSync)} · ${pending} écriture(s) ne sont que sur ce téléphone`
+      : `${pending} écriture(s) n'existent que sur ce téléphone, et nulle part ailleurs`);
   const level = alerts.some(a => a.lvl === 'bad') ? 'bad' : alerts.length ? 'warn' : 'good';
   return { level, alerts };
 }
@@ -434,15 +481,19 @@ function randCode(n) {
   return Array.from(r, x => A[x % A.length]).join('');
 }
 
-function syncAvec(avec) {
-  if (!K.data.net.online) { App.toast('Pas de réseau. Tout reste enregistré sur ce téléphone.'); return false; }
+/* Akiba n'a pas de serveur : rien ne part jamais tout seul du téléphone. Ce qui sort, ce sont
+   des fichiers — la sauvegarde chiffrée, ou le fichier de transfert vers un autre téléphone.
+   Cette fonction note donc ce qui vient réellement d'être mis à l'abri dans un fichier, et
+   c'est le seul moment où le compteur « à sauvegarder » retombe à zéro. Elle ne s'appelle
+   jamais d'elle-même : un bouton ne peut pas sauvegarder à votre place. */
+function marquerSorti(avec, comment) {
+  if (!avec) return 0;
   const n = pending(avec);
   avec.tx.forEach(t => t.synced = true);
   avec.meetings.forEach(m => { if (m.status === 'closed') m.synced = true; });
   avec.lastSync = Date.now();
-  DB.save();
-  App.toast(n ? `${n} écriture${n > 1 ? 's' : ''} envoyée${n > 1 ? 's' : ''} au serveur` : 'Déjà à jour');
-  return true;
+  avec.lastSyncKind = comment || 'fichier';
+  return n;
 }
 
 /* ---------- données de démonstration ---------- */
@@ -745,25 +796,31 @@ const topbar = (title, sub, left = '', right = '') => {
   return `<header class="topbar">${left}<div class="t"><b>${esc(title)}</b><span>${sub}</span></div>${right}</header>`;
 };
 const backBtn = (to, extra = '') => `<button class="iconbtn" data-act="back" data-to="${to}" ${extra} aria-label="Retour">${ic('back')}</button>`;
+/* La pastille ne dépend plus du réseau : le réseau ne met rien à l'abri. Elle dit une seule
+   chose, celle qui compte si le téléphone tombe dans la rivière — combien d'écritures
+   n'existent que là. */
 function syncPill(avec) {
-  const n = pending(avec), on = K.data.net.online;
-  const label = !on ? `Hors ligne${n ? ' · ' + n : ''}` : n ? `${n} à envoyer` : 'À jour';
-  return `<button class="sync ${on && !n ? '' : 'off'}" data-act="syncSheet" aria-label="État de synchronisation"><i></i>${label}</button>`;
+  const n = pending(avec);
+  const label = n ? `${n} à sauvegarder` : 'Sauvegardé';
+  return `<button class="sync ${n ? 'off' : ''}" data-act="syncSheet" aria-label="État de la sauvegarde"><i></i>${label}</button>`;
 }
 function tabbar(items, cur) {
   return `<nav class="tabbar"><div class="in">${items.map(t => `<button class="tab ${t.id === cur ? 'on' : ''}" data-act="go" data-to="${t.id}">${ic(t.icon)}${t.label}</button>`).join('')}</div></nav>`;
 }
 ACT.syncSheet = () => {
   const avec = K.session && K.session.avecId ? avecById(K.session.avecId) : null;
-  const on = K.data.net.online;
+  const n = avec ? pending(avec) : 0;
   App.openSheet(`
-    <h2>Synchronisation</h2>
-    <div class="alert ${on ? 'good' : 'warn'}">${ic(on ? 'cloud' : 'alert')}<div><b>${on ? 'Réseau disponible' : 'Pas de réseau'}</b><span class="small">Toutes les opérations sont d'abord enregistrées sur ce téléphone. Elles partent au serveur dès que le réseau revient.</span></div></div>
-    ${avec ? `<div class="grid2"><div class="kpi"><span>En attente</span><b class="num">${pending(avec)}</b></div><div class="kpi"><span>Dernier envoi</span><b style="font-size:1.05rem">${avec.lastSync ? ago(avec.lastSync) : 'jamais'}</b></div></div>
-    ${avec.orgId ? '' : '<p class="hint">Cette AVEC est autonome : la sauvegarde en ligne protège vos données si le téléphone est perdu. Aucune organisation ne les voit.</p>'}
-    <button class="btn primary block xl" data-act="doSync">${ic('sync')} Envoyer maintenant</button>` : ''}
+    <h2>Sauvegarde</h2>
+    <div class="alert ${n ? 'warn' : 'good'}">${icSpan(n ? 'alert' : 'shield')}<div><b>${n ? n + ' écriture' + (n > 1 ? 's' : '') + ' n\'existe' + (n > 1 ? 'nt' : '') + ' que sur ce téléphone' : 'Tout est sorti du téléphone'}</b>
+      <span class="small">Akiba n'envoie rien toute seule : il n'y a pas de serveur. Vos écritures sortent du téléphone quand vous créez un <b>fichier de sauvegarde</b>, ou quand vous envoyez l'AVEC à un autre téléphone. Tant que vous ne l'avez pas fait, le cahier n'existe qu'ici.</span></div></div>
+    ${avec ? `<div class="grid2"><div class="kpi"><span>À sauvegarder</span><b class="num">${n}</b></div><div class="kpi"><span>Dernière sortie</span><b style="font-size:1.05rem">${avec.lastSync ? ago(avec.lastSync) : 'jamais'}</b></div></div>
+    ${avec.lastSync ? `<p class="hint">Dernière sortie du téléphone : ${fdt(avec.lastSync)}${avec.lastSyncKind ? ' (' + esc(avec.lastSyncKind) + ')' : ''}.</p>` : ''}
+    <button class="btn primary block xl" data-act="backupSheet">${ic('shield')} Créer une sauvegarde</button>
+    <p class="hint">Le fichier est chiffré par un mot de passe. Gardez-le ailleurs que sur ce téléphone : chez la présidente, au bureau de l'organisation, sur une carte mémoire.</p>` : ''}
     ${K.data.mode === 'prod' ? '' : `<div class="row between card"><div><b>Simuler l'absence de réseau</b><p class="hint">Démonstration : pour tester le mode village</p></div><button class="toggle ${on ? '' : 'on'}" data-act="toggleNet" aria-label="Simuler hors ligne"></button></div>`}`);
 };
-ACT.doSync = () => { const a = avecById(K.session.avecId); syncAvec(a); App.closeSheet(); };
+/* « Envoyer maintenant » n'existe plus : il n'envoyait nulle part. Le geste qui protège est la
+   sauvegarde, et elle demande un mot de passe — donc une décision, pas un simple toucher. */
 ACT.toggleNet = () => {
   if (K.data.mode === 'prod') return; K.data.net.online = !K.data.net.online; DB.save(); ACT.syncSheet(); };

@@ -135,6 +135,20 @@ SCREENS['a.shareRun'] = () => {
    avant de demander confirmation, puis juste avant d'écrire — entre les deux, une
    réunion peut s'être ouverte sur un autre téléphone du groupe. */
 function sharePret(avec, st) {
+  /* D'abord l'intégrité. Le partage rend une année d'épargne et ferme le cycle : il ne doit
+     jamais s'appuyer sur un cahier que l'application elle-même sait altéré. L'alerte existait
+     à l'accueil, mais rien ne l'empêchait ici — c'était l'opération la plus irréversible de
+     l'application, et la seule à ne pas vérifier la chaîne. */
+  const ch = verifyChain(avec);
+  if (!ch.ok) return 'Le journal est altéré : le partage est impossible. ' + (ch.reason || '');
+  /* Un cahier reçu d'un autre téléphone peut être amputé des réunions tenues là-bas après la
+     copie. On ne partage pas une année d'épargne sur un cahier dont personne n'a vérifié
+     qu'il est le dernier. */
+  /* la liste des membres décide qui reçoit une part : elle doit tenir autant que le journal */
+  const vm = verifyMembres(avec);
+  if (!vm.ok) return 'La liste des membres ne correspond pas au journal : ' + vm.reason;
+  if (avec.recuDe && !avec.recuDe.confirme)
+    return `Ce cahier vient d'un autre téléphone (copié à la réunion n°${avec.recuDe.reunions}) : vérifiez qu'il est bien le plus récent avant de partager`;
   if (openMeeting(avec)) return 'Fermez d\'abord la réunion en cours';
   const plan = sharePlan(avec, st);
   if (plan.blocked.length) return 'Des membres doivent rembourser avant le partage';
@@ -220,7 +234,7 @@ function shareExecuter() {
   avec.cycle = { n: next, start: now, end: now + (avec.settings.cycleMonths || 12) * 30 * DAY, rulesPending: true };
   avec.waitlist = [];                    // les demandes de crédit non servies ne traversent pas le partage : l'assemblée repart à neuf
   DB.save();
-  if (K.data.net.online) syncAvec(avec);
+  /* le partage ne sort pas le cahier du téléphone : seule une sauvegarde le fait */
   App.go('a.newCycle');
 }
 
@@ -360,6 +374,14 @@ const codeSheet = (title, pin) => `<h2>${esc(title)}</h2>
   <p class="hint">Donnez ce code en main propre, jamais par message. Le membre le changera dans « Mon carnet ».</p>
   <button class="btn primary block xl" data-act="closeSheet">C'est noté</button>`;
 const newPin = () => { let p; do { p = String(1000 + Math.floor(Math.random() * 9000)); } while (WEAK_PINS.includes(p)); return p; };
+/* Dans un groupe de vingt-cinq, deux codes tirés au hasard se ressemblent une fois sur trente :
+   mesuré, un groupe sur cent avait deux membres au même code. Or le code sert à confirmer une
+   clôture et à valider un crédit : deux membres au même code peuvent signer l'un pour l'autre. */
+const newPinLibre = pris => {
+  const deja = new Set((pris || []).map(String));
+  for (let i = 0; i < 500; i++) { const p = newPin(); if (!deja.has(p)) return p; }
+  return newPin();                                                 // 8 990 codes possibles : on n'arrive jamais ici
+};
 
 ACT.addMemberSheet = () => {
   const { avec, me } = cur();
@@ -369,15 +391,22 @@ ACT.addMemberSheet = () => {
     ${approverFields(avec, me, 'nm')}
     <button class="btn primary block xl" data-act="saveMember">${ic('plus')} Ajouter au groupe</button>`);
 };
+/* Toute arrivée et tout départ laissent une écriture : c'est ce qui permet de dire plus tard
+   qu'un nom présent dans la liste n'a jamais été inscrit par l'assemblée. */
+function inscrireAuJournal(avec, membre, quoi) {
+  appendTx(avec, { type: 'MEMBRE', amount: 0, memberId: membre.id, by: (cur().me || {}).id || null,
+    note: quoi + ' · ' + membre.name });
+}
 ACT.saveMember = () => {
   const { avec } = cur();
   const r = readMemberForm('nm'); if (r.error) return App.toast(r.error);
   const name = r.data.name;
   if (avec.members.some(m => !m.left && m.name.toLowerCase() === name.toLowerCase())) return App.toast('Ce nom existe déjà dans le groupe');
   const ap = checkApprover(avec, 'nm', null); if (!ap) return;
-  const pin = newPin();
+  const pin = newPinLibre(avec.members.map(y => y.pin));
   const x = Object.assign({ id: avec.id + '-' + uid() }, r.data, { pin, role: 'membre', key: false, joined: Date.now() });
   avec.members.push(x);
+  inscrireAuJournal(avec, x, 'Membre inscrit par l' + String.fromCharCode(39) + 'assemblée, validé par ' + ap.name);
   const m = openMeeting(avec);
   if (m && m.stepDone < 3) m.presence[x.id] = 'P';
   DB.save();
@@ -444,6 +473,7 @@ ACT.saveDepart = d => {
   appendTx(avec, { meetingId: m.id, type: 'DEPART', memberId: x.id, amount: c.d.savings, note: `Épargne rendue ${fc(c.refund)} · validé par ${ap.name}`, by: me.id });
   x.left = Date.now();
   if (isBureau(x) || x.key) x.key = false;
+  inscrireAuJournal(avec, x, 'Membre sorti du groupe, validé par ' + ap.name);
   DB.save(); App.closeSheet(); App.toast(`${x.name} a quitté le groupe`);
 };
 
@@ -493,7 +523,7 @@ SCREENS['a.more'] = () => {
       ${li('', 'globe', 'Langue', I18N.name(), 'langSheet')}
       ${li('', 'eye', 'Apparence', THEMES[themeChoisi()], 'themeSheet')}
       ${li('', sonActif() ? 'bell' : 'bellOff', 'Sons', sonActif() ? 'Une note à chaque écriture' : 'Coupés', 'sonSheet')}
-      ${li('', 'cloud', 'Synchronisation', `${pending(avec)} écriture(s) à envoyer`, 'syncSheet')}
+      ${li('', 'shield', 'Sauvegarde', pending(avec) ? `${pending(avec)} écriture(s) ne sont que sur ce téléphone` : 'tout est sorti du téléphone', 'syncSheet')}
     </div>
     <section class="section"><h2>Règlement intérieur · cycle ${avec.cycle.n}</h2><div class="list">
       ${[['Valeur d\'une part', fc(s.partValue)], ['Parts par réunion', '1 à ' + s.maxParts], ['Caisse sociale', fc(s.socialFee) + ' par réunion'], ['Intérêt du crédit', s.rate + ' % par mois'], ['Crédit maximum', s.maxMult + ' × l\'épargne'], ['Durée maximum du crédit', s.maxMonths + ' mois'], ['Amende absence / retard', fc(s.fineAbsent) + ' / ' + fc(s.fineLate)], ['Pénalité de retard de crédit', penRate(s) ? penRate(s) + ' % par mois' : 'aucune'], ['Durée du cycle', (s.cycleMonths || 12) + ' mois'], ['Réunions', (s.meetingDay ? s.meetingDay + ', ' : '') + ((s.frequency || 7) === 14 ? 'toutes les 2 semaines' : 'chaque semaine')]]

@@ -355,8 +355,9 @@ ACT.cCreate = () => {
   const r = d.r, g = d.g, R = d.roles;
   const id = 'avec-' + uid();
   const start = fromIso(r.cycleStart);
+  const pinsPris = [];
   const members = d.members.map(m => ({
-    id: id + '-' + m.id, name: m.name, sex: m.sex, phone: m.phone || '—', pin: newPin(), joined: Date.now(),
+    id: id + '-' + m.id, name: m.name, sex: m.sex, phone: m.phone || '—', pin: (() => { const p = newPinLibre(pinsPris); pinsPris.push(p); return p; })(), joined: Date.now(),
     birthYear: m.birthYear || null, birthDate: m.birthDate || '', photo: m.photo || '', activity: m.activity || '', address: m.address || '',
     role: m.id === R.P ? 'president' : m.id === R.S ? 'secretaire' : m.id === R.T ? 'tresorier' : (m.id === R.C1 || m.id === R.C2) ? 'compteur' : 'membre',
     key: [R.K1, R.K2, R.K3].includes(m.id)
@@ -380,6 +381,10 @@ ACT.cCreate = () => {
     avec.gps = g.gps;
     appendTx(avec, { type: 'GEO', amount: 0, lat: g.gps.lat, lon: g.gps.lon, acc: g.gps.acc, by: null, note: 'Point GPS à la création ' + gpsTexte(g.gps) + (g.gps.acc ? ' (' + gpsPrecision(g.gps) + ')' : '') });
   }
+  /* Les membres fondateurs entrent dans le journal : sans cela, la liste du premier jour ne
+     serait couverte par rien, et c'est précisément celle qui compte le plus. */
+  members.forEach(m => appendTx(avec, { type: 'MEMBRE', amount: 0, memberId: m.id, by: null,
+    note: 'Membre fondateur · ' + m.name + (m.role !== 'membre' ? ' · ' + ROLES[m.role] : '') }));
   if (d.mode === 'reprise') importCahier(avec, d);
   K.data.avecs.push(avec);
   if (d.from === 'login') K.session = { kind: 'avec', avecId: id, memberId: members.find(m => m.role === 'president').id };
